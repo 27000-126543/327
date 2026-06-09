@@ -1,6 +1,6 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FileSignature, UserCheck, Building, Clock, MessageSquare, CheckCircle2, Loader2, ChevronRight, FileText, Upload } from 'lucide-react';
+import { FileSignature, UserCheck, Building, Clock, MessageSquare, CheckCircle2, Loader2, ChevronRight, FileText, Upload, X, AlertCircle } from 'lucide-react';
 import { useFireStore } from '@/store/useFireStore';
 import { TopBar } from '@/components/Panels/TopBar';
 import type { UserRole } from '@/types';
@@ -11,7 +11,14 @@ export default function ApprovalPage() {
   const approvals = useFireStore(s => s.approvals);
   const buildings = useFireStore(s => s.buildings);
   const advanceApproval = useFireStore(s => s.advanceApproval);
+  const submitApproval = useFireStore(s => s.submitApproval);
   const role = currentUser?.role || 'command';
+
+  const [showForm, setShowForm] = useState(false);
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [buildingId, setBuildingId] = useState('b1');
+  const [formError, setFormError] = useState('');
 
   useEffect(() => { if (!currentUser) navigate('/login', { replace: true }); }, [currentUser, navigate]);
 
@@ -23,6 +30,17 @@ export default function ApprovalPage() {
     { role: 'command' as UserRole, label: '消防大队终审', desc: '消防大队最终审批签发' },
   ];
 
+  const canSubmit = role === 'property';
+
+  const handleSubmit = () => {
+    if (!title.trim() || !description.trim() || !buildingId) {
+      setFormError('请完整填写申请标题、描述和所属楼宇');
+      return;
+    }
+    submitApproval({ title: title.trim(), description: description.trim(), buildingId });
+    setTitle(''); setDescription(''); setBuildingId('b1'); setFormError(''); setShowForm(false);
+  };
+
   return (
     <div className="w-full min-h-screen bg-deep-space relative overflow-auto">
       <TopBar />
@@ -32,12 +50,68 @@ export default function ApprovalPage() {
             <h1 className="hud-title text-2xl flex items-center gap-3">
               <FileSignature className="w-7 h-7 text-cyber-blue" /> 装修审批中心
             </h1>
-            <p className="text-slate-500 text-sm mt-1">物业 → 消防科 → 消防大队 三级电子会签流程</p>
+            <p className="text-slate-500 text-sm mt-1">物业 → 消防科 → 消防大队 三级电子会签流程 · 共 {approvals.length} 条申请</p>
           </div>
-          <button className="cyber-btn-green flex items-center gap-2 px-5 py-2.5">
+          <button
+            onClick={() => canSubmit && setShowForm(true)}
+            disabled={!canSubmit}
+            className={`flex items-center gap-2 px-5 py-2.5 ${canSubmit ? 'cyber-btn-green' : 'cyber-btn-disabled opacity-50 cursor-not-allowed'}`}
+            title={canSubmit ? '' : '仅物业角色可提交新申请'}
+          >
             <Upload className="w-4 h-4" /> 提交新申请
+            {!canSubmit && <span className="text-[10px] opacity-70">（仅物业）</span>}
           </button>
         </div>
+
+        {showForm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowForm(false)}>
+            <div className="cyber-panel p-6 w-[520px] max-w-[92vw]" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-5">
+                <h3 className="hud-title text-lg flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-life-green" /> 提交装修审批申请
+                </h3>
+                <button onClick={() => setShowForm(false)} className="text-slate-400 hover:text-white">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-[11px] text-cyber-blue mb-1.5 font-bold">所属楼宇 *</label>
+                  <select value={buildingId} onChange={e => setBuildingId(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-lg bg-space-blue/40 border border-cyber-blue/30 text-white text-sm focus:border-cyber-blue outline-none">
+                    {buildings.map(b => <option key={b.id} value={b.id}>{b.name}（共{b.floors}层）</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] text-cyber-blue mb-1.5 font-bold">申请标题 *</label>
+                  <input value={title} onChange={e => setTitle(e.target.value)}
+                    placeholder="例如：A座23层XX公司装修消防审批"
+                    className="w-full px-3 py-2.5 rounded-lg bg-space-blue/40 border border-cyber-blue/30 text-white text-sm focus:border-cyber-blue outline-none placeholder:text-slate-600" />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-cyber-blue mb-1.5 font-bold">申请内容 *</label>
+                  <textarea value={description} onChange={e => setDescription(e.target.value)} rows={4}
+                    placeholder="请描述装修范围、施工日期、涉及的消防设施变更等详细信息..."
+                    className="w-full px-3 py-2.5 rounded-lg bg-space-blue/40 border border-cyber-blue/30 text-white text-sm focus:border-cyber-blue outline-none placeholder:text-slate-600 resize-none" />
+                </div>
+                {formError && (
+                  <div className="flex items-center gap-2 p-2.5 rounded bg-fire-red/10 border border-fire-red/30 text-fire-red text-xs">
+                    <AlertCircle className="w-4 h-4 shrink-0" /> {formError}
+                  </div>
+                )}
+                <div className="flex justify-end gap-3 pt-2">
+                  <button onClick={() => setShowForm(false)}
+                    className="px-5 py-2 rounded border border-slate-600 text-slate-300 text-sm hover:bg-space-blue/50">
+                    取消
+                  </button>
+                  <button onClick={handleSubmit} className="cyber-btn-green px-5 py-2 text-sm">
+                    ⚡ 提交申请（物业初审节点）
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="cyber-panel p-5 mb-6 corner-border relative overflow-hidden">
           <div className="absolute inset-0 scan-line pointer-events-none opacity-40" />

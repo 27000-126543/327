@@ -179,19 +179,19 @@ export default function ReportsPage() {
                 <div>
                   <span className="text-cyber-muted">待处理</span>
                   <p className="text-warn-orange font-bold font-mono">
-                    {workOrders.filter(o => o.status === 'pending').length}
+                    {displayOrders.filter(o => o.status === 'pending').length}
                   </p>
                 </div>
                 <div>
                   <span className="text-cyber-muted">处理中</span>
                   <p className="text-cyber-blue font-bold font-mono">
-                    {workOrders.filter(o => o.status === 'processing').length}
+                    {displayOrders.filter(o => o.status === 'processing').length}
                   </p>
                 </div>
                 <div>
                   <span className="text-cyber-muted">已完成</span>
                   <p className="text-life-green font-bold font-mono">
-                    {workOrders.filter(o => o.status === 'completed').length}
+                    {displayOrders.filter(o => o.status === 'completed').length}
                   </p>
                 </div>
               </div>

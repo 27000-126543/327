@@ -78,32 +78,43 @@ function generateFacilityWorkOrders(buildings: Building[]): WorkOrder[] {
   return created;
 }
 
+function getOrderDedupKey(o: WorkOrder): string {
+  if (o.id.startsWith('wo_smoke_')) return makeFaultKey(o.buildingId, o.floor || 0, 'smoke');
+  if (o.id.startsWith('wo_spr_')) return makeFaultKey(o.buildingId, o.floor || 0, 'sprinkler');
+  if (o.id.startsWith('wo_hyd_')) return makeFaultKey(o.buildingId, o.floor || 0, 'hydrant');
+  if (o.type === 'pressure_boost') return makeFaultKey(o.buildingId, o.floor || 0, 'hydrant');
+  if (o.type === 'facility_repair') {
+    if (o.title.includes('烟感')) return makeFaultKey(o.buildingId, o.floor || 0, 'smoke');
+    if (o.title.includes('喷淋')) return makeFaultKey(o.buildingId, o.floor || 0, 'sprinkler');
+  }
+  return `manual__${o.id}`;
+}
+
 function mergeAndDedupWorkOrders(mockOrders: WorkOrder[], buildings: Building[]): WorkOrder[] {
   const persisted = loadWorkOrdersFromLS();
   const base = persisted && persisted.length > 0 ? persisted : mockOrders;
 
   const byKey = new Map<string, WorkOrder>();
+  const idSeen = new Set<string>();
   base.forEach(o => {
-    let key: string;
-    if (o.type === 'pressure_boost') key = makeFaultKey(o.buildingId, o.floor || 0, 'hydrant');
-    else if (o.id.includes('_smoke_')) key = makeFaultKey(o.buildingId, o.floor || 0, 'smoke');
-    else if (o.id.includes('_spr_')) key = makeFaultKey(o.buildingId, o.floor || 0, 'sprinkler');
-    else key = o.id;
-    byKey.set(key, o);
+    const key = getOrderDedupKey(o);
+    if (idSeen.has(o.id)) return;
+    idSeen.add(o.id);
+    const prev = byKey.get(key);
+    if (!prev) { byKey.set(key, o); return; }
+    if (prev.status === 'completed') { byKey.set(key, prev); return; }
+    const statusRank = (s: string) => s === 'completed' ? 3 : s === 'processing' ? 2 : 1;
+    byKey.set(key, statusRank(o.status) >= statusRank(prev.status) ? o : prev);
   });
 
   const autoGen = generateFacilityWorkOrders(buildings);
   autoGen.forEach(o => {
-    const key = makeFaultKey(o.buildingId, o.floor || 0,
-      o.type === 'pressure_boost' ? 'hydrant' : o.id.includes('_spr_') ? 'sprinkler' : 'smoke');
-    if (!byKey.has(key)) {
-      byKey.set(key, o);
-    } else {
-      const existing = byKey.get(key)!;
-      if (existing.status === 'completed') {
-        byKey.set(key, existing);
-      }
-    }
+    const key = getOrderDedupKey(o);
+    const existing = byKey.get(key);
+    if (!existing) { byKey.set(key, o); return; }
+    if (existing.status === 'completed') { byKey.set(key, existing); return; }
+    if (existing.status === 'processing') { byKey.set(key, existing); return; }
+    byKey.set(key, existing);
   });
 
   return Array.from(byKey.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -641,6 +652,6 @@ export const useFireStore = create<FireState>((set, get) => {
       return { replayCurrentTime: max, replayPlaying: false };
     }
     return { replayCurrentTime: next };
-  }),
+  })
   };
 }));
