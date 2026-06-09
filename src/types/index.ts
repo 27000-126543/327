@@ -82,9 +82,12 @@ export interface FireTruck {
   name: string;
   type: 'water' | 'ladder' | 'rescue' | 'command';
   stationId: string;
-  status: 'idle' | 'dispatched' | 'returning';
+  status: 'idle' | 'dispatched' | 'arrived' | 'returning';
   currentPosition: [number, number, number];
   eta?: number;
+  targetBuildingId?: string;
+  pathSegmentIndex?: number;
+  progressPercent?: number;
 }
 
 export interface EvacuationPath {
@@ -165,6 +168,7 @@ export interface LinkedDeviceStatus {
 
 export interface DailyReport {
   date: string;
+  filterDate?: string;
   fireAlarmCount: number;
   fireAlarmByLevel: Record<number, number>;
   avgResponseTime: number;
@@ -176,4 +180,6 @@ export interface DailyReport {
   truckDispatches: Array<{
     truckName: string; alarmLevel: number; responseTime: number; }>;
   pendingOrders: number;
+  todayAlarms?: FireAlarm[];
+  todayOrders?: WorkOrder[];
 }

@@ -24,13 +24,15 @@ export default function ReportsPage() {
   );
 
   const report = useMemo(() => {
-    const dateStr = new Date(selectedDate).toLocaleDateString('zh-CN');
-    return generateDailyReport(buildings, fireAlarms, workOrders, dateStr);
+    return generateDailyReport(buildings, fireAlarms, workOrders, selectedDate);
   }, [selectedDate, buildings, fireAlarms, workOrders]);
 
   const handleExport = () => {
-    exportDailyReportExcel(report, fireAlarms, workOrders);
+    exportDailyReportExcel(report);
   };
+
+  const displayAlarms = report.todayAlarms || fireAlarms;
+  const displayOrders = report.todayOrders || workOrders;
 
   if (!currentUser) return null;
 
@@ -352,7 +354,12 @@ export default function ReportsPage() {
                 <span className="col-span-1">楼层</span>
                 <span className="col-span-3">状态</span>
               </div>
-              {workOrders.map(o => (
+              {displayOrders.length === 0 ? (
+                <div className="text-center py-16 text-cyber-muted text-sm flex flex-col items-center gap-2">
+                  <Wrench size={36} className="opacity-30" />
+                  <span>当日无工单记录</span>
+                </div>
+              ) : displayOrders.map(o => (
                 <div
                   key={o.id}
                   className="grid grid-cols-12 gap-2 px-3 py-2.5 border border-cyber-blue/15 hover:border-cyber-blue/40 hover:bg-cyber-blue/5 transition-all text-xs items-center"

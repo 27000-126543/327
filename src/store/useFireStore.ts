@@ -10,6 +10,105 @@ import {
   mockFireZones
 } from '@/data/mockData';
 
+const WORKORDERS_LS_KEY = 'fire_platform_workorders_v1';
+
+function loadWorkOrdersFromLS(): WorkOrder[] | null {
+  try {
+    const raw = localStorage.getItem(WORKORDERS_LS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as WorkOrder[];
+  } catch {
+    return null;
+  }
+}
+
+function saveWorkOrdersToLS(orders: WorkOrder[]) {
+  try {
+    localStorage.setItem(WORKORDERS_LS_KEY, JSON.stringify(orders));
+  } catch { /* ignore */ }
+}
+
+function makeFaultKey(buildingId: string, floor: number, type: string): string {
+  return `${buildingId}__${floor}__${type}`;
+}
+
+function generateFacilityWorkOrders(buildings: Building[]): WorkOrder[] {
+  const created: WorkOrder[] = [];
+  const today = new Date().toLocaleString('zh-CN');
+  buildings.forEach(b => {
+    b.facilities.forEach(f => {
+      if (f.smokeDetector.status === 'fault') {
+        created.push({
+          id: `wo_smoke_${b.id}_${f.floor}`,
+          type: 'facility_repair',
+          title: `${b.name} ${f.floor}层烟感探测器故障维修`,
+          description: `烟感探测器信号异常或设备离线，需现场排查更换`,
+          buildingId: b.id,
+          floor: f.floor,
+          status: 'pending',
+          createdAt: today,
+        });
+      }
+      if (f.sprinkler.status === 'fault') {
+        created.push({
+          id: `wo_spr_${b.id}_${f.floor}`,
+          type: 'facility_repair',
+          title: `${b.name} ${f.floor}层喷淋系统故障检修`,
+          description: `喷淋系统支管压力异常或电磁阀故障，需检修`,
+          buildingId: b.id,
+          floor: f.floor,
+          status: 'pending',
+          createdAt: today,
+        });
+      }
+      if (f.hydrantPressure < 0.4) {
+        created.push({
+          id: `wo_hyd_${b.id}_${f.floor}`,
+          type: 'pressure_boost',
+          title: `${b.name} ${f.floor}层消防栓水压不足加压`,
+          description: `当前水压${f.hydrantPressure.toFixed(2)}MPa，低于标准0.4MPa，需排查管网并加压`,
+          buildingId: b.id,
+          floor: f.floor,
+          status: 'pending',
+          createdAt: today,
+        });
+      }
+    });
+  });
+  return created;
+}
+
+function mergeAndDedupWorkOrders(mockOrders: WorkOrder[], buildings: Building[]): WorkOrder[] {
+  const persisted = loadWorkOrdersFromLS();
+  const base = persisted && persisted.length > 0 ? persisted : mockOrders;
+
+  const byKey = new Map<string, WorkOrder>();
+  base.forEach(o => {
+    let key: string;
+    if (o.type === 'pressure_boost') key = makeFaultKey(o.buildingId, o.floor || 0, 'hydrant');
+    else if (o.id.includes('_smoke_')) key = makeFaultKey(o.buildingId, o.floor || 0, 'smoke');
+    else if (o.id.includes('_spr_')) key = makeFaultKey(o.buildingId, o.floor || 0, 'sprinkler');
+    else key = o.id;
+    byKey.set(key, o);
+  });
+
+  const autoGen = generateFacilityWorkOrders(buildings);
+  autoGen.forEach(o => {
+    const key = makeFaultKey(o.buildingId, o.floor || 0,
+      o.type === 'pressure_boost' ? 'hydrant' : o.id.includes('_spr_') ? 'sprinkler' : 'smoke');
+    if (!byKey.has(key)) {
+      byKey.set(key, o);
+    } else {
+      const existing = byKey.get(key)!;
+      if (existing.status === 'completed') {
+        byKey.set(key, existing);
+      }
+    }
+  });
+
+  return Array.from(byKey.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
 interface FireState {
   currentUser: User | null;
   loginRecords: LoginRecord[];
@@ -74,7 +173,7 @@ export const useFireStore = create<FireState>((set, get) => ({
     status: 'active',
     spreadFloors: [24],
   }],
-  workOrders: mockWorkOrders,
+  workOrders: mergeAndDedupWorkOrders(mockWorkOrders, mockBuildings),
   fireStation: mockFireStation,
   activeTruck: null,
   dispatchPath: null,
@@ -144,22 +243,39 @@ export const useFireStore = create<FireState>((set, get) => ({
     const [sx, , sz] = station.position;
     const [ex, , ez] = b.position;
     const midX = (sx + ex) / 2;
-    path.push(station.position);
+    path.push([...station.position] as [number, number, number]);
     path.push([midX, 0, sz + 8]);
     path.push([midX, 0, (sz + ez) / 2]);
     path.push([ex + 8, 0, ez]);
-    path.push(b.position);
+    path.push([...b.position] as [number, number, number]);
 
-    const newTrucks = station.trucks.map(t => {
-      if (idleTrucks.find(it => it.id === t.id)) {
-        return { ...t, status: 'dispatched' as const, eta: 180 + Math.floor(Math.random() * 120) };
+    let totalDist = 0;
+    for (let i = 0; i < path.length - 1; i++) {
+      const d = Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][2] - path[i][2]);
+      totalDist += d;
+    }
+    const baseEta = Math.max(120, Math.floor(totalDist * 8));
+
+    const newTrucks = station.trucks.map((t, idx) => {
+      const matchIdx = idleTrucks.findIndex(it => it.id === t.id);
+      if (matchIdx >= 0) {
+        const startPos: [number, number, number] = [...station.position];
+        return {
+          ...t,
+          status: 'dispatched' as const,
+          eta: baseEta + matchIdx * 25,
+          targetBuildingId: buildingId,
+          pathSegmentIndex: 0,
+          progressPercent: 0,
+          currentPosition: startPos,
+        };
       }
       return t;
     });
 
     set({
       fireStation: { ...station, trucks: newTrucks },
-      activeTruck: idleTrucks[0],
+      activeTruck: newTrucks.find(t => t.id === idleTrucks[0].id) || null,
       dispatchPath: path,
     });
   },
@@ -178,19 +294,31 @@ export const useFireStore = create<FireState>((set, get) => ({
   }),
   deactivateEvacuation: () => set({ evacuationActive: false, evacuationBuildingId: null }),
 
-  addWorkOrder: (order) => set((s) => ({
-    workOrders: [...s.workOrders, { ...order, id: `wo${Date.now()}`, createdAt: new Date().toLocaleString('zh-CN') }],
-  })),
+  addWorkOrder: (order) => set((s) => {
+    const newOrder: WorkOrder = { ...order, id: `wo${Date.now()}`, createdAt: new Date().toLocaleString('zh-CN') };
+    const next = [...s.workOrders, newOrder];
+    saveWorkOrdersToLS(next);
+    return { workOrders: next };
+  }),
 
-  updateWorkOrderStatus: (id, status) => set((s) => ({
-    workOrders: s.workOrders.map(w => w.id === id ? { ...w, status } : w),
-  })),
+  updateWorkOrderStatus: (id, status) => set((s) => {
+    const next = s.workOrders.map(w => w.id === id ? { ...w, status } : w);
+    saveWorkOrdersToLS(next);
+    return { workOrders: next };
+  }),
 
   advanceApproval: (approvalId, role, comment) => set((s) => ({
     approvals: s.approvals.map(a => {
       if (a.id !== approvalId) return a;
-      const stepIndex = a.steps.findIndex(st => st.role === role && st.status === 'pending');
+      const roleToStep: Record<string, 'property' | 'fire_dept' | 'fire_bureau'> = {
+        property: 'property',
+        inspector: 'fire_dept',
+        command: 'fire_bureau',
+      };
+      const stepRole = roleToStep[role];
+      const stepIndex = a.steps.findIndex(st => st.role === stepRole && st.status === 'pending');
       if (stepIndex === -1) return a;
+      if (stepIndex !== a.currentStep) return a;
       const steps = [...a.steps];
       steps[stepIndex] = {
         ...steps[stepIndex], status: 'approved', comment,
@@ -200,7 +328,7 @@ export const useFireStore = create<FireState>((set, get) => ({
       const nextStep = steps.findIndex(st => st.status === 'pending');
       return {
         ...a, steps,
-        currentStep: nextStep === -1 ? 3 : stepIndex + 1,
+        currentStep: nextStep === -1 ? 3 : nextStep,
         status: nextStep === -1 ? 'approved' : 'pending',
       };
     }),
@@ -256,30 +384,85 @@ export const useFireStore = create<FireState>((set, get) => ({
     const path = s.dispatchPath;
     if (!path || path.length < 2) return {};
     const station = s.fireStation;
+
+    let totalPathDist = 0;
+    const segLens: number[] = [];
+    for (let i = 0; i < path.length - 1; i++) {
+      const d = Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][2] - path[i][2]);
+      segLens.push(d);
+      totalPathDist += d;
+    }
+
     let activeIdx = -1;
     const newTrucks = station.trucks.map((t, i) => {
       if (t.status !== 'dispatched') return t;
       activeIdx = i;
-      const target = path[Math.min(path.length - 1, 1 + i % (path.length - 1))];
-      const dx = target[0] - t.currentPosition[0];
-      const dz = target[2] - t.currentPosition[2];
-      const dist = Math.sqrt(dx * dx + dz * dz);
-      if (dist < 0.3) {
-        return { ...t, eta: t.eta ? Math.max(0, t.eta - 1) : 0 };
+
+      let segIdx = t.pathSegmentIndex || 0;
+      if (segIdx >= path.length - 1) {
+        return {
+          ...t,
+          status: 'arrived' as const,
+          eta: 0,
+          progressPercent: 100,
+          currentPosition: path[path.length - 1],
+        };
       }
-      const speed = 0.5;
-      const newEta = t.eta ? Math.max(0, t.eta - 1) : 0;
-      const newPos: [number, number, number] = [
-        t.currentPosition[0] + (dx / dist) * speed,
-        0,
-        t.currentPosition[2] + (dz / dist) * speed,
-      ];
+
+      const from = path[segIdx];
+      const to = path[segIdx + 1];
+      const dx = to[0] - t.currentPosition[0];
+      const dz = to[2] - t.currentPosition[2];
+      const dist = Math.hypot(dx, dz);
+
+      const speed = 0.6;
+      let newPos: [number, number, number];
+      let newSegIdx = segIdx;
+
+      if (dist < speed) {
+        newPos = [...to] as [number, number, number];
+        newSegIdx = segIdx + 1;
+      } else {
+        newPos = [
+          t.currentPosition[0] + (dx / dist) * speed,
+          0,
+          t.currentPosition[2] + (dz / dist) * speed,
+        ];
+      }
+
+      let traveled = 0;
+      for (let j = 0; j < newSegIdx; j++) traveled += segLens[j] || 0;
+      if (newSegIdx < path.length - 1) {
+        traveled += Math.hypot(newPos[0] - path[newSegIdx][0], newPos[2] - path[newSegIdx][2]);
+      }
+      const progress = Math.min(100, Math.round((traveled / Math.max(0.01, totalPathDist)) * 100));
+      const remainDist = Math.max(0, totalPathDist - traveled);
+      const newEta = Math.max(0, Math.round(remainDist * 10));
+
+      if (newSegIdx >= path.length - 1) {
+        return {
+          ...t,
+          status: 'arrived' as const,
+          eta: 0,
+          pathSegmentIndex: path.length - 1,
+          progressPercent: 100,
+          currentPosition: path[path.length - 1],
+        };
+      }
+
       return {
         ...t,
         currentPosition: newPos,
+        pathSegmentIndex: newSegIdx,
+        progressPercent: progress,
         eta: newEta,
       };
     });
+
+    const firstDispatched = newTrucks.findIndex(t => t.status === 'dispatched' || t.status === 'arrived');
+    if (firstDispatched >= 0) {
+      activeIdx = firstDispatched;
+    }
     if (activeIdx >= 0) {
       return { fireStation: { ...station, trucks: newTrucks }, activeTruck: newTrucks[activeIdx] };
     }

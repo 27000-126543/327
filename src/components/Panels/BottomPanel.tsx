@@ -47,8 +47,8 @@ export function BottomPanel() {
         </div>
         <button
           onClick={() => {
-            const r = generateDailyReport(buildings, alarms, orders);
-            exportDailyReportExcel(r, alarms, orders);
+            const r = generateDailyReport(buildings, alarms, orders, new Date().toISOString().split('T')[0]);
+            exportDailyReportExcel(r);
           }}
           className="cyber-btn-green text-xs px-3 py-1.5 flex items-center gap-1.5"
         >
@@ -151,11 +151,11 @@ function ApprovalsTab({ approvals, role, advance }: { approvals: any[]; role: Us
   return (
     <div className="grid grid-cols-3 gap-3 h-full overflow-auto">
       {approvals.map(a => (
-        <div key={a.id} className="p-3 rounded-lg bg-space-blue/50 border border-cyber-blue/20 flex flex-col">
+        <div key={a.id} className={`p-3 rounded-lg flex flex-col ${a.status === 'approved' ? 'bg-life-green/5 border border-life-green/30' : 'bg-space-blue/50 border border-cyber-blue/20'}`}>
           <div className="flex items-start justify-between mb-2">
             <div className="font-medium text-white text-sm">{a.title}</div>
-            <span className={`text-[10px] px-1.5 py-0.5 rounded ${a.status === 'approved' ? 'bg-life-green/15 text-life-green' : 'bg-warn-orange/15 text-warn-orange'}`}>
-              {a.status === 'approved' ? '通过' : '审批中'}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded ${a.status === 'approved' ? 'bg-life-green/15 text-life-green border border-life-green/40' : 'bg-warn-orange/15 text-warn-orange border border-warn-orange/40 animate-pulse'}`}>
+              {a.status === 'approved' ? '✓ 通过' : a.currentStep >= 3 ? '流程完成' : `第${a.currentStep + 1}步`}
             </span>
           </div>
           <div className="text-[10px] text-slate-400 mb-2">{a.applicant} · {a.submittedAt}</div>
@@ -163,21 +163,24 @@ function ApprovalsTab({ approvals, role, advance }: { approvals: any[]; role: Us
           <div className="space-y-1 mt-auto">
             {a.steps.map((st: any, i: number) => {
               const currentRoleMatch = stepRole[st.role] === role;
+              const isCurrent = a.currentStep === i && st.status === 'pending' && a.status === 'pending';
               return (
-                <div key={i} className={`text-[11px] flex items-center gap-2 p-1.5 rounded ${st.status === 'approved' ? 'bg-life-green/8' : a.currentStep === i ? 'bg-cyber-blue/10 border border-cyber-blue/30' : 'bg-space-blue/30'}`}>
-                  <span className={`w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold ${st.status === 'approved' ? 'bg-life-green/25 text-life-green' : a.currentStep === i ? 'bg-cyber-blue/25 text-cyber-blue animate-pulse' : 'bg-slate-600/30 text-slate-500'}`}>
+                <div key={i} className={`text-[11px] flex items-center gap-2 p-1.5 rounded ${st.status === 'approved' ? 'bg-life-green/8 border border-life-green/20' : isCurrent ? 'bg-cyber-blue/10 border border-cyber-blue/40 shadow-[0_0_12px_rgba(56,189,248,0.15)]' : 'bg-space-blue/30 border border-transparent'}`}>
+                  <span className={`w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold ${st.status === 'approved' ? 'bg-life-green/25 text-life-green' : isCurrent ? 'bg-cyber-blue/25 text-cyber-blue animate-pulse' : 'bg-slate-600/30 text-slate-500'}`}>
                     {st.status === 'approved' ? '✓' : i + 1}
                   </span>
                   <div className="flex-1 min-w-0">
-                    <div className={`${st.status === 'approved' ? 'text-life-green' : a.currentStep === i ? 'text-cyber-blue' : 'text-slate-500'} font-medium`}>
+                    <div className={`${st.status === 'approved' ? 'text-life-green' : isCurrent ? 'text-cyber-blue' : 'text-slate-500'} font-medium`}>
                       {stepLabels[i]}
+                      {st.status === 'approved' && <span className="ml-1 text-life-green/70">(已通过)</span>}
+                      {isCurrent && <span className="ml-1 text-cyber-blue/70">(当前节点)</span>}
                     </div>
                     {st.approver && <div className="text-[9px] text-slate-500 truncate">{st.approver} · {st.approvedAt}</div>}
                   </div>
-                  {a.currentStep === i && currentRoleMatch && st.status === 'pending' && (
+                  {isCurrent && currentRoleMatch && (
                     <button onClick={() => advance(a.id, role, '同意')}
-                      className="px-2 py-0.5 rounded bg-life-green/15 text-life-green text-[10px] hover:bg-life-green/25 border border-life-green/30 shrink-0">
-                      会签
+                      className="px-2.5 py-0.5 rounded bg-life-green/20 text-life-green text-[10px] hover:bg-life-green/30 border border-life-green/50 shrink-0 font-bold shadow-[0_0_10px_rgba(34,197,94,0.2)] hover:shadow-[0_0_15px_rgba(34,197,94,0.4)] transition-all">
+                      ⚡ 电子会签
                     </button>
                   )}
                 </div>

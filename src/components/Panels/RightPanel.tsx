@@ -13,7 +13,7 @@ export function RightPanel() {
   const [fireLevel, setFireLevel] = useState<1 | 2 | 3>(2);
   const [fireFloor, setFireFloor] = useState(20);
 
-  const dispatched = fireStation.trucks.filter(t => t.status === 'dispatched');
+  const dispatched = fireStation.trucks.filter(t => t.status === 'dispatched' || t.status === 'arrived');
   const idle = fireStation.trucks.filter(t => t.status === 'idle');
   const selectedBuilding = buildings.find(b => b.id === selectedBuildingId);
   const activeAlarm = fireAlarms.find(a => a.status === 'active');
@@ -88,26 +88,50 @@ export function RightPanel() {
         </h2>
 
         <div className="space-y-2 mb-3">
-          {dispatched.map(t => (
-            <div key={t.id} className="p-2 rounded-lg bg-fire-red/10 border border-fire-red/40 animate-pulse-fast">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-fire-red flex items-center gap-1.5">
-                  <Navigation className="w-3.5 h-3.5" />{t.name}
-                </span>
-                <span className="text-[10px] text-life-green font-orbitron font-bold">
-                  {t.eta !== undefined ? `${Math.floor(t.eta / 60)}:${String(t.eta % 60).padStart(2, '0')}` : '已到达'}
-                </span>
+          {dispatched.map(t => {
+            const isArrived = t.status === 'arrived';
+            const progress = t.progressPercent || 0;
+            return (
+              <div key={t.id} className={`p-2 rounded-lg border transition-all ${
+                isArrived
+                  ? 'bg-life-green/10 border-life-green/50 shadow-[0_0_15px_rgba(34,197,94,0.15)]'
+                  : 'bg-fire-red/10 border-fire-red/40 animate-pulse-fast'
+              }`}>
+                <div className="flex items-center justify-between">
+                  <span className={`text-xs font-bold flex items-center gap-1.5 ${isArrived ? 'text-life-green' : 'text-fire-red'}`}>
+                    <Navigation className="w-3.5 h-3.5" />{t.name}
+                  </span>
+                  <span className={`text-[10px] font-orbitron font-bold px-1.5 py-0.5 rounded ${
+                    isArrived
+                      ? 'bg-life-green/20 text-life-green border border-life-green/40'
+                      : 'text-warn-orange bg-warn-orange/10'
+                  }`}>
+                    {isArrived ? '✓ 已到达现场' : (t.eta !== undefined && t.eta > 0 ? `预计 ${Math.floor(t.eta / 60)}:${String(t.eta % 60).padStart(2, '0')}` : '即将到达')}
+                  </span>
+                </div>
+                <div className="mt-2 h-2 rounded bg-space-blue/60 overflow-hidden relative">
+                  <div className={`h-full transition-all duration-300 ${
+                    isArrived
+                      ? 'bg-gradient-to-r from-life-green to-life-green/70'
+                      : 'bg-gradient-to-r from-life-green via-cyber-blue to-warn-orange'
+                  }`}
+                    style={{ width: `${progress}%` }} />
+                  <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
+                    {progress}%
+                  </span>
+                </div>
+                <div className="text-[10px] text-slate-500 mt-1.5 flex items-center justify-between">
+                  <span className="flex items-center gap-1">
+                    <MapPinned className="w-3 h-3" />
+                    ({t.currentPosition[0].toFixed(1)}, {t.currentPosition[2].toFixed(1)})
+                  </span>
+                  {t.pathSegmentIndex !== undefined && (
+                    <span>节点 {t.pathSegmentIndex + 1}/5</span>
+                  )}
+                </div>
               </div>
-              <div className="mt-1 h-1 rounded bg-space-blue/60 overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-life-green to-cyber-blue transition-all duration-500"
-                  style={{ width: `${100 - ((t.eta || 0) / 300 * 100)}%` }} />
-              </div>
-              <div className="text-[10px] text-slate-500 mt-0.5 flex items-center gap-1">
-                <MapPinned className="w-3 h-3" />
-                位置: ({t.currentPosition[0].toFixed(1)}, {t.currentPosition[2].toFixed(1)})
-              </div>
-            </div>
-          ))}
+            );
+          })}
           {idle.map(t => (
             <div key={t.id} className="p-2 rounded-lg bg-space-blue/40 border border-cyber-blue/15">
               <div className="flex items-center justify-between">
