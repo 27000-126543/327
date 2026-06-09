@@ -174,20 +174,41 @@ interface FireState {
   tickReplay: (deltaMs: number) => void;
 }
 
-export const useFireStore = create<FireState>((set, get) => ({
-  currentUser: null,
-  loginRecords: mockLoginRecords,
-  buildings: mockBuildings,
-  fireAlarms: [{
+export const useFireStore = create<FireState>((set, get) => {
+  const nowTs = Date.now();
+  const initialTriggerTs = nowTs - 60_000;
+  const initialAlarm: FireAlarm = {
     id: 'fa1',
     buildingId: 'b1',
     buildingName: '天际中心大厦',
     sourceFloor: 24,
     level: 2,
-    triggerTime: new Date().toISOString(),
+    triggerTime: new Date(initialTriggerTs).toISOString(),
+    triggerTimestamp: initialTriggerTs,
     status: 'active',
     spreadFloors: [24],
-  }],
+  };
+
+  return {
+  currentUser: null,
+  loginRecords: mockLoginRecords,
+  buildings: mockBuildings,
+  fireAlarms: [initialAlarm],
+  timelineEvents: [
+    { id: 'tl1', alarmId: 'fa1', type: 'alarm_trigger', timestamp: initialTriggerTs,
+      title: '火警触发', description: '24层烟感探测器触发信号',
+      snapshot: { spreadFloors: [24] } },
+    { id: 'tl2', alarmId: 'fa1', type: 'linkage_start', timestamp: initialTriggerTs + 3000,
+      title: '联动启动', description: '启动应急联动预案' },
+    { id: 'tl3', alarmId: 'fa1', type: 'linkage_shutter', timestamp: initialTriggerTs + 5000,
+      title: '防火卷帘关闭', description: '防火分区卷帘下降完成' },
+    { id: 'tl4', alarmId: 'fa1', type: 'truck_dispatched', timestamp: initialTriggerTs + 10000,
+      title: '消防车出动', description: '调度3辆消防车出警',
+      snapshot: { truckStatuses: { ft1: 'dispatched', ft2: 'dispatched', ft3: 'dispatched' } } },
+    { id: 'tl5', alarmId: 'fa1', type: 'fire_spread', timestamp: initialTriggerTs + 40000,
+      title: '火势蔓延', description: '蔓延至23、25层',
+      snapshot: { spreadFloors: [23, 24, 25] } },
+  ],
   workOrders: mergeAndDedupWorkOrders(mockWorkOrders, mockBuildings),
   fireStation: mockFireStation,
   activeTruck: null,
@@ -205,6 +226,12 @@ export const useFireStore = create<FireState>((set, get) => ({
   },
   selectedBuildingId: 'b1',
   activeTab: 'dashboard',
+
+  replayMode: false,
+  replayAlarmId: null,
+  replayCurrentTime: 0,
+  replayPlaying: false,
+  replaySnapshots: [],
 
   login: (role) => {
     const userMap: Record<UserRole, User> = {
@@ -228,23 +255,51 @@ export const useFireStore = create<FireState>((set, get) => ({
   triggerFireAlarm: (buildingId, floor, level) => {
     const b = get().buildings.find(x => x.id === buildingId);
     if (!b) return;
+    const ts = Date.now();
     const alarm: FireAlarm = {
-      id: `fa${Date.now()}`, buildingId, buildingName: b.name,
-      sourceFloor: floor, level, triggerTime: new Date().toISOString(),
-      status: 'active', spreadFloors: [floor],
+      id: `fa${ts}`, buildingId, buildingName: b.name,
+      sourceFloor: floor, level, triggerTime: new Date(ts).toISOString(),
+      triggerTimestamp: ts, status: 'active', spreadFloors: [floor],
     };
     set({ fireAlarms: [...get().fireAlarms, alarm] });
-    get().triggerLinkedDevices();
-    setTimeout(() => get().dispatchTrucks(buildingId, level), 1500);
+    get().addTimelineEvent({ alarmId: alarm.id, type: 'alarm_trigger',
+      title: '火警触发', description: `${b.name} ${floor}层烟感触发`,
+      snapshot: { spreadFloors: [floor], linkedDevices: get().linkedDevices } });
+    setTimeout(() => {
+      get().triggerLinkedDevices();
+      get().addTimelineEvent({ alarmId: alarm.id, type: 'linkage_start',
+        title: '联动系统启动', description: '启动应急联动预案' });
+      setTimeout(() => get().addTimelineEvent({ alarmId: alarm.id, type: 'linkage_shutter',
+        title: '防火卷帘关闭', snapshot: { linkedDevices: { fireShutter: true } } }), 800);
+      setTimeout(() => get().addTimelineEvent({ alarmId: alarm.id, type: 'linkage_exhaust',
+        title: '排烟风机启动', snapshot: { linkedDevices: { smokeExtractor: true } } }), 1500);
+      setTimeout(() => get().addTimelineEvent({ alarmId: alarm.id, type: 'linkage_broadcast',
+        title: '消防广播开启', snapshot: { linkedDevices: { broadcast: true } } }), 2200);
+      setTimeout(() => get().addTimelineEvent({ alarmId: alarm.id, type: 'linkage_sprinkler',
+        title: '喷淋系统启动', snapshot: { linkedDevices: { sprinkler: true } } }), 2800);
+    }, 500);
+    setTimeout(() => {
+      get().dispatchTrucks(buildingId, level);
+      get().addTimelineEvent({ alarmId: alarm.id, type: 'truck_dispatched',
+        title: '消防车出动', description: `调度${level === 1 ? 2 : level === 2 ? 3 : 5}辆消防车`,
+        timestamp: Date.now() });
+    }, 1500);
   },
 
-  updateFireSpread: (alarmId, floors) => set((s) => ({
-    fireAlarms: s.fireAlarms.map(a => a.id === alarmId ? { ...a, spreadFloors: floors } : a),
-  })),
+  updateFireSpread: (alarmId, floors) => {
+    set((s) => ({ fireAlarms: s.fireAlarms.map(a => a.id === alarmId ? { ...a, spreadFloors: floors } : a) }));
+    get().addTimelineEvent({ alarmId, type: 'fire_spread',
+      title: '火势蔓延', description: `涉及楼层: ${floors.sort().join('、')}层`,
+      snapshot: { spreadFloors: floors } });
+  },
 
-  resolveFireAlarm: (alarmId) => set((s) => ({
-    fireAlarms: s.fireAlarms.map(a => a.id === alarmId ? { ...a, status: 'resolved' } : a),
-  })),
+  resolveFireAlarm: (alarmId) => {
+    const ts = Date.now();
+    set((s) => ({ fireAlarms: s.fireAlarms.map(a =>
+      a.id === alarmId ? { ...a, status: 'resolved', resolvedAt: ts } : a) }));
+    get().addTimelineEvent({ alarmId, type: 'fire_resolved',
+      title: '火警处置完成', description: '现场处置结束，确认无复燃风险' });
+  },
 
   dispatchTrucks: (buildingId, level) => {
     const b = get().buildings.find(x => x.id === buildingId);
@@ -409,12 +464,14 @@ export const useFireStore = create<FireState>((set, get) => ({
     }
 
     let activeIdx = -1;
+    const arrivedIds: string[] = [];
     const newTrucks = station.trucks.map((t, i) => {
       if (t.status !== 'dispatched') return t;
       activeIdx = i;
 
       let segIdx = t.pathSegmentIndex || 0;
       if (segIdx >= path.length - 1) {
+        if (t.status !== 'arrived') arrivedIds.push(t.id);
         return {
           ...t,
           status: 'arrived' as const,
@@ -455,6 +512,7 @@ export const useFireStore = create<FireState>((set, get) => ({
       const newEta = Math.max(0, Math.round(remainDist * 10));
 
       if (newSegIdx >= path.length - 1) {
+        arrivedIds.push(t.id);
         return {
           ...t,
           status: 'arrived' as const,
@@ -474,6 +532,19 @@ export const useFireStore = create<FireState>((set, get) => ({
       };
     });
 
+    setTimeout(() => {
+      arrivedIds.forEach(tid => {
+        const truck = get().fireStation.trucks.find(x => x.id === tid);
+        const alarm = get().fireAlarms.find(a => a.status !== 'resolved'
+          && (a.buildingId === truck?.targetBuildingId));
+        if (truck && alarm) {
+          get().addTimelineEvent({ alarmId: alarm.id, type: 'truck_arrived',
+            title: `${truck.name}到达现场`, description: '消防指战员已就位开始处置',
+            snapshot: { truckStatuses: { [tid]: 'arrived' }, truckProgress: { [tid]: 100 } } });
+        }
+      });
+    }, 30);
+
     const firstDispatched = newTrucks.findIndex(t => t.status === 'dispatched' || t.status === 'arrived');
     if (firstDispatched >= 0) {
       activeIdx = firstDispatched;
@@ -484,8 +555,10 @@ export const useFireStore = create<FireState>((set, get) => ({
     return {};
   }),
 
-  tickFireSpread: () => set((s) => ({
-    fireAlarms: s.fireAlarms.map(a => {
+  tickFireSpread: () => {
+    const s = get();
+    const updates: { alarmId: string; floors: number[] }[] = [];
+    const newAlarms = s.fireAlarms.map(a => {
       if (a.status !== 'active') return a;
       const maxSpread = a.level === 1 ? 2 : a.level === 2 ? 5 : 10;
       if (a.spreadFloors.length >= maxSpread) return a;
@@ -497,7 +570,77 @@ export const useFireStore = create<FireState>((set, get) => ({
       const b = s.buildings.find(bb => bb.id === a.buildingId);
       if (b && newFloor > b.floors) return a;
       if (a.spreadFloors.includes(newFloor)) return a;
-      return { ...a, spreadFloors: [...a.spreadFloors, newFloor] };
-    }),
+      const nextFloors = [...a.spreadFloors, newFloor];
+      updates.push({ alarmId: a.id, floors: nextFloors });
+      return { ...a, spreadFloors: nextFloors };
+    });
+    set({ fireAlarms: newAlarms });
+    updates.forEach(u => {
+      const alarm = get().fireAlarms.find(x => x.id === u.alarmId);
+      if (alarm) get().addTimelineEvent({ alarmId: u.alarmId, type: 'fire_spread',
+        title: '火势蔓延', description: `新增${u.floors[u.floors.length - 1]}层受影响`,
+        snapshot: { spreadFloors: u.floors } });
+    });
+  },
+
+  addTimelineEvent: (e) => set((s) => ({
+    timelineEvents: [...s.timelineEvents, {
+      ...e,
+      id: `tl${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      timestamp: e.timestamp ?? Date.now(),
+    }],
   })),
+
+  submitApproval: (data) => set((s) => {
+    const now = new Date();
+    const ts = now.toLocaleString('zh-CN');
+    const building = s.buildings.find(b => b.id === data.buildingId);
+    const newItem: ApprovalItem = {
+      id: `ap${Date.now()}`,
+      title: data.title,
+      applicant: s.currentUser?.name || '物业人员',
+      buildingId: data.buildingId,
+      description: `${data.description}${building ? `（${building.name}）` : ''}`,
+      submittedAt: ts,
+      steps: [
+        { role: 'property', status: 'pending' },
+        { role: 'fire_dept', status: 'pending' },
+        { role: 'fire_bureau', status: 'pending' },
+      ],
+      currentStep: 0,
+      status: 'pending',
+    };
+    return { approvals: [...s.approvals, newItem] };
+  }),
+
+  startReplay: (alarmId) => set((s) => {
+    const events = s.timelineEvents.filter(e => e.alarmId === alarmId).sort((a, b) => a.timestamp - b.timestamp);
+    if (events.length === 0) return {};
+    const startTs = events[0].timestamp;
+    const normalizedEvents = events.map(e => ({ ...e, timestamp: e.timestamp - startTs }));
+    return {
+      replayMode: true,
+      replayAlarmId: alarmId,
+      replayCurrentTime: 0,
+      replayPlaying: true,
+      replaySnapshots: normalizedEvents,
+    };
+  }),
+  stopReplay: () => set({ replayMode: false, replayAlarmId: null, replayCurrentTime: 0, replayPlaying: false, replaySnapshots: [] }),
+  toggleReplayPlaying: () => set((s) => ({ replayPlaying: !s.replayPlaying })),
+  seekReplay: (offsetMs) => set((s) => {
+    const max = s.replaySnapshots.length > 0
+      ? s.replaySnapshots[s.replaySnapshots.length - 1].timestamp : 0;
+    return { replayCurrentTime: Math.max(0, Math.min(max, offsetMs)) };
+  }),
+  tickReplay: (deltaMs) => set((s) => {
+    if (!s.replayPlaying || s.replaySnapshots.length === 0) return {};
+    const max = s.replaySnapshots[s.replaySnapshots.length - 1].timestamp;
+    const next = s.replayCurrentTime + deltaMs;
+    if (next >= max) {
+      return { replayCurrentTime: max, replayPlaying: false };
+    }
+    return { replayCurrentTime: next };
+  }),
+  };
 }));
