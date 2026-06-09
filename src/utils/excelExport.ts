@@ -108,42 +108,45 @@ export function exportDailyReportExcel(report: DailyReport) {
 
   const dispatchData = [
     ['序号', '车辆', '火警等级', '响应时间（秒）'],
-    ...report.truckDispatches.map((t, i) => [
-      i + 1, t.truckName, `Lv.${t.alarmLevel}`, t.responseTime,
-    ]),
-    report.truckDispatches.length === 0 ? ['-', '本日无出警记录', '-', '-'] : [],
-  ].filter(r => r.length > 1 || r[0] !== '-');
+    ...(report.truckDispatches.length === 0
+      ? [['-', '本日无出警记录', '-', '-'] as any]
+      : report.truckDispatches.map((t, i) => [
+          i + 1, t.truckName, `Lv.${t.alarmLevel}`, t.responseTime,
+        ] as any)),
+  ];
   const ws2 = XLSX.utils.aoa_to_sheet(dispatchData);
   ws2['!cols'] = [{ wch: 8 }, { wch: 25 }, { wch: 12 }, { wch: 16 }];
   XLSX.utils.book_append_sheet(wb, ws2, '消防车出警记录');
 
   const alarmDetail = [
     ['ID', '建筑名称', '火源楼层', '等级', '状态', '触发时间'],
-    ...filteredAlarms.map(a => [
-      a.id, a.buildingName, a.sourceFloor + 'F',
-      `Lv.${a.level}`,
-      a.status === 'active' ? '处置中' : a.status === 'contained' ? '已控制' : '已解决',
-      new Date(a.triggerTime).toLocaleString('zh-CN'),
-    ]),
-    filteredAlarms.length === 0 ? ['-', '本日无火警记录', '-', '-', '-', '-'] : [],
-  ].filter(r => r.length > 1 || r[0] !== '-');
+    ...(filteredAlarms.length === 0
+      ? [['-', '本日无火警记录', '-', '-', '-', '-'] as any]
+      : filteredAlarms.map(a => [
+          a.id, a.buildingName, a.sourceFloor + 'F',
+          `Lv.${a.level}`,
+          a.status === 'active' ? '处置中' : a.status === 'contained' ? '已控制' : '已解决',
+          new Date(a.triggerTime).toLocaleString('zh-CN'),
+        ] as any)),
+  ];
   const ws3 = XLSX.utils.aoa_to_sheet(alarmDetail);
   ws3['!cols'] = [{ wch: 12 }, { wch: 25 }, { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 22 }];
   XLSX.utils.book_append_sheet(wb, ws3, '火警明细');
 
   const orderData = [
     ['工单ID', '类型', '标题', '楼层', '状态', '创建时间', '指派'],
-    ...filteredOrders.map(o => [
-      o.id,
-      o.type === 'facility_repair' ? '设施维修'
-        : o.type === 'pressure_boost' ? '水压加压'
-        : o.type === 'tow_vehicle' ? '拖车通知' : '通道清理',
-      o.title, o.floor ? o.floor + 'F' : '-',
-      o.status === 'pending' ? '待处理' : o.status === 'processing' ? '处理中' : '已完成',
-      o.createdAt, o.assignedTo || '-',
-    ]),
-    filteredOrders.length === 0 ? ['-', '本日无工单记录', '-', '-', '-', '-', '-'] : [],
-  ].filter(r => r.length > 1 || r[0] !== '-');
+    ...(filteredOrders.length === 0
+      ? [['-', '本日无工单记录', '-', '-', '-', '-', '-'] as any]
+      : filteredOrders.map(o => [
+          o.id,
+          o.type === 'facility_repair' ? '设施维修'
+            : o.type === 'pressure_boost' ? '水压加压'
+            : o.type === 'tow_vehicle' ? '拖车通知' : '通道清理',
+          o.title, o.floor ? o.floor + 'F' : '-',
+          o.status === 'pending' ? '待处理' : o.status === 'processing' ? '处理中' : '已完成',
+          o.createdAt, o.assignedTo || '-',
+        ] as any)),
+  ];
   const ws4 = XLSX.utils.aoa_to_sheet(orderData);
   ws4['!cols'] = [{ wch: 12 }, { wch: 10 }, { wch: 35 }, { wch: 8 }, { wch: 10 }, { wch: 22 }, { wch: 12 }];
   XLSX.utils.book_append_sheet(wb, ws4, '工单明细');

@@ -2,7 +2,8 @@ import { create } from 'zustand';
 import type {
   User, UserRole, LoginRecord, Building, FireAlarm, WorkOrder,
   FireStation, FireTruck, PatrolRobot, ApprovalItem, FireHydrant,
-  ChannelOccupation, LinkedDeviceStatus, FireZone
+  ChannelOccupation, LinkedDeviceStatus, FireZone, ReplayBackupState,
+  FireTimelineEvent
 } from '@/types';
 import {
   mockBuildings, mockFireStation, mockHydrants, mockRobots,
@@ -120,6 +121,154 @@ function mergeAndDedupWorkOrders(mockOrders: WorkOrder[], buildings: Building[])
   return Array.from(byKey.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+interface SnapshotBuildState {
+  spreadFloors: number[];
+  linked: LinkedDeviceStatus;
+  truckStatuses: Record<string, FireTruck['status']>;
+  truckEtas: Record<string, number>;
+  truckProgress: Record<string, number>;
+  truckPositions: Record<string, [number, number, number]>;
+}
+
+function applyReplaySnapshots<S extends {
+  replayBackup: ReplayBackupState | null;
+  replaySnapshots: FireTimelineEvent[];
+  replayAlarmId: string | null;
+  dispatchPath: [number, number, number][] | null;
+  fireAlarms: FireAlarm[];
+  fireStation: FireStation;
+  linkedDevices: LinkedDeviceStatus;
+  activeTruck: FireTruck | null;
+}>(s: S, offsetMs: number): Partial<S> {
+  if (!s.replayBackup) return {};
+
+  const events = s.replaySnapshots.filter(e => e.timestamp <= offsetMs);
+  const backup = s.replayBackup;
+
+  const state: SnapshotBuildState = {
+    spreadFloors: [],
+    linked: { fireShutter: false, smokeExtractor: false, broadcast: false, sprinkler: false, elevatorDrop: false },
+    truckStatuses: {},
+    truckEtas: {},
+    truckProgress: {},
+    truckPositions: {},
+  };
+
+  const dispatchPath = backup.dispatchPath;
+  let totalDist = 0;
+  const segLens: number[] = [];
+  if (dispatchPath) {
+    for (let i = 0; i < dispatchPath.length - 1; i++) {
+      const d = Math.hypot(
+        dispatchPath[i + 1][0] - dispatchPath[i][0],
+        dispatchPath[i + 1][2] - dispatchPath[i][2]
+      );
+      segLens.push(d);
+      totalDist += d;
+    }
+  }
+
+  events.forEach(ev => {
+    const snap = ev.snapshot;
+    if (!snap) return;
+    if (snap.spreadFloors) state.spreadFloors = snap.spreadFloors;
+    if (snap.linkedDevices) state.linked = { ...state.linked, ...snap.linkedDevices };
+    if (snap.truckStatuses) state.truckStatuses = { ...state.truckStatuses, ...snap.truckStatuses };
+    if (snap.truckEtas) state.truckEtas = { ...state.truckEtas, ...snap.truckEtas };
+    if (snap.truckProgress) state.truckProgress = { ...state.truckProgress, ...snap.truckProgress };
+    if (snap.truckPositions) state.truckPositions = { ...state.truckPositions, ...snap.truckPositions };
+  });
+
+  const lastFireEvent = [...events].reverse().find(e => e.type === 'alarm_trigger' || e.type === 'fire_spread');
+  const alarmSourceFloor = (() => {
+    const a = backup.fireAlarms.find(x => x.id === s.replayAlarmId);
+    return a ? a.sourceFloor : 0;
+  })();
+  if (state.spreadFloors.length === 0 && alarmSourceFloor > 0) {
+    state.spreadFloors = [alarmSourceFloor];
+  }
+  if (!lastFireEvent && state.spreadFloors.length === 0) {
+    state.spreadFloors = [];
+  }
+
+  const newFireAlarms = backup.fireAlarms.map(a => {
+    if (a.id !== s.replayAlarmId) return a;
+    return { ...a, spreadFloors: state.spreadFloors };
+  });
+
+  let firstActiveIdx = -1;
+  const dispatchedTruckIds = Object.keys(state.truckStatuses).filter(k =>
+    state.truckStatuses[k] === 'dispatched' || state.truckStatuses[k] === 'arrived'
+  );
+  const idleTruckIds = backup.fireStation.trucks
+    .filter(t => dispatchedTruckIds.length === 0 ? true : !dispatchedTruckIds.includes(t.id))
+    .map(t => t.id);
+
+  const newTrucks = backup.fireStation.trucks.map((t, i) => {
+    const status = state.truckStatuses[t.id];
+    if (!status || status === 'idle') {
+      const base = s.replayBackup!.fireStation.trucks[i];
+      return { ...base, status: 'idle' as const, eta: undefined, pathSegmentIndex: 0, progressPercent: 0 };
+    }
+
+    const progress = state.truckProgress[t.id] ?? 0;
+    const eta = state.truckEtas[t.id] ?? (status === 'arrived' ? 0 : 180);
+    let pos: [number, number, number] = state.truckPositions[t.id] || backup.fireStation.trucks[i].currentPosition;
+
+    if (dispatchPath && totalDist > 0) {
+      let traveled = (progress / 100) * totalDist;
+      if (status === 'arrived') traveled = totalDist;
+      let acc = 0;
+      let segIdx = 0;
+      for (let j = 0; j < segLens.length; j++) {
+        if (acc + segLens[j] >= traveled) { segIdx = j; break; }
+        acc += segLens[j];
+        if (j === segLens.length - 1) segIdx = j;
+      }
+      const segRemain = traveled - acc;
+      const segLen = segLens[segIdx] || 1;
+      const segT = Math.min(1, segRemain / segLen);
+      const from = dispatchPath[Math.min(segIdx, dispatchPath.length - 1)];
+      const to = dispatchPath[Math.min(segIdx + 1, dispatchPath.length - 1)];
+      pos = [
+        from[0] + (to[0] - from[0]) * segT,
+        0,
+        from[2] + (to[2] - from[2]) * segT,
+      ];
+      if ((status === 'dispatched' && Object.keys(state.truckStatuses).length > 0) || status === 'arrived') {
+        if (firstActiveIdx < 0) firstActiveIdx = i;
+      }
+    }
+
+    return {
+      ...t,
+      status,
+      eta,
+      currentPosition: pos,
+      progressPercent: status === 'arrived' ? 100 : progress,
+      pathSegmentIndex: status === 'arrived' ? (dispatchPath ? dispatchPath.length - 1 : 0) : undefined,
+    };
+  });
+
+  for (let i = 0; i < newTrucks.length; i++) {
+    if (newTrucks[i].status === 'dispatched' || newTrucks[i].status === 'arrived') {
+      if (firstActiveIdx < 0) firstActiveIdx = i;
+      break;
+    }
+  }
+
+  const result: Partial<S> = {
+    replayCurrentTime: offsetMs as any,
+    fireAlarms: newFireAlarms as any,
+    fireStation: { ...backup.fireStation, trucks: newTrucks } as any,
+    linkedDevices: state.linked as any,
+    activeTruck: firstActiveIdx >= 0 ? newTrucks[firstActiveIdx] as any : null,
+    dispatchPath: backup.dispatchPath as any,
+    replayAlarmId: s.replayAlarmId as any,
+  };
+  return result;
+}
+
 interface FireState {
   currentUser: User | null;
   loginRecords: LoginRecord[];
@@ -146,6 +295,7 @@ interface FireState {
   replayCurrentTime: number;
   replayPlaying: boolean;
   replaySnapshots: FireTimelineEvent[];
+  replayBackup: ReplayBackupState | null;
 
   login: (role: UserRole) => void;
   logout: () => void;
@@ -243,6 +393,7 @@ export const useFireStore = create<FireState>((set, get) => {
   replayCurrentTime: 0,
   replayPlaying: false,
   replaySnapshots: [],
+  replayBackup: null,
 
   login: (role) => {
     const userMap: Record<UserRole, User> = {
@@ -629,29 +780,44 @@ export const useFireStore = create<FireState>((set, get) => {
     if (events.length === 0) return {};
     const startTs = events[0].timestamp;
     const normalizedEvents = events.map(e => ({ ...e, timestamp: e.timestamp - startTs }));
+
+    const backup: ReplayBackupState = {
+      fireAlarms: JSON.parse(JSON.stringify(s.fireAlarms)),
+      fireStation: JSON.parse(JSON.stringify(s.fireStation)),
+      linkedDevices: { ...s.linkedDevices },
+      activeTruck: s.activeTruck ? JSON.parse(JSON.stringify(s.activeTruck)) : null,
+      dispatchPath: s.dispatchPath ? JSON.parse(JSON.stringify(s.dispatchPath)) : null,
+    };
+
     return {
       replayMode: true,
       replayAlarmId: alarmId,
       replayCurrentTime: 0,
-      replayPlaying: true,
+      replayPlaying: false,
       replaySnapshots: normalizedEvents,
+      replayBackup: backup,
+      linkedDevices: { fireShutter: false, smokeExtractor: false, broadcast: false, sprinkler: false, elevatorDrop: false },
     };
   }),
-  stopReplay: () => set({ replayMode: false, replayAlarmId: null, replayCurrentTime: 0, replayPlaying: false, replaySnapshots: [] }),
-  toggleReplayPlaying: () => set((s) => ({ replayPlaying: !s.replayPlaying })),
-  seekReplay: (offsetMs) => set((s) => {
-    const max = s.replaySnapshots.length > 0
-      ? s.replaySnapshots[s.replaySnapshots.length - 1].timestamp : 0;
-    return { replayCurrentTime: Math.max(0, Math.min(max, offsetMs)) };
+  stopReplay: () => set((s) => {
+    if (!s.replayBackup) return { replayMode: false, replayAlarmId: null, replayCurrentTime: 0, replayPlaying: false, replaySnapshots: [], replayBackup: null };
+    const b = s.replayBackup;
+    return {
+      replayMode: false, replayAlarmId: null, replayCurrentTime: 0, replayPlaying: false, replaySnapshots: [], replayBackup: null,
+      fireAlarms: b.fireAlarms,
+      fireStation: b.fireStation,
+      linkedDevices: b.linkedDevices,
+      activeTruck: b.activeTruck,
+      dispatchPath: b.dispatchPath,
+    };
   }),
+  toggleReplayPlaying: () => set((s) => ({ replayPlaying: !s.replayPlaying })),
+  seekReplay: (offsetMs) => set((s) => applyReplaySnapshots(s, offsetMs)),
   tickReplay: (deltaMs) => set((s) => {
     if (!s.replayPlaying || s.replaySnapshots.length === 0) return {};
     const max = s.replaySnapshots[s.replaySnapshots.length - 1].timestamp;
-    const next = s.replayCurrentTime + deltaMs;
-    if (next >= max) {
-      return { replayCurrentTime: max, replayPlaying: false };
-    }
-    return { replayCurrentTime: next };
-  })
+    const next = Math.min(max, s.replayCurrentTime + deltaMs);
+    return applyReplaySnapshots(s, next);
+  }),
   };
 }));

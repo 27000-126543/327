@@ -199,6 +199,14 @@ export interface LinkedDeviceStatus {
   elevatorDrop: boolean;
 }
 
+export interface ReplayBackupState {
+  fireAlarms: FireAlarm[];
+  fireStation: FireStation;
+  linkedDevices: LinkedDeviceStatus;
+  activeTruck: FireTruck | null;
+  dispatchPath: [number, number, number][] | null;
+}
+
 export interface DailyReport {
   date: string;
   filterDate?: string;

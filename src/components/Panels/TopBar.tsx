@@ -4,7 +4,7 @@ import { Activity, ShieldAlert, LogOut, Building2, Flame, Siren, Users, FileSign
 import { useFireStore } from '@/store/useFireStore';
 
 export function TopBar() {
-  const { currentUser, logout, fireAlarms, buildings, workOrders } = useFireStore();
+  const { currentUser, logout, fireAlarms, buildings, workOrders, approvals } = useFireStore();
   const [time, setTime] = useState(new Date());
   const location = useLocation();
   const navigate = useNavigate();
@@ -16,6 +16,8 @@ export function TopBar() {
 
   const activeAlarms = fireAlarms.filter(a => a.status === 'active').length;
   const pendingOrders = workOrders.filter(w => w.status !== 'completed').length;
+  const pendingApprovals = approvals.filter(a => a.status !== 'approved').length;
+  const approvedApprovals = approvals.filter(a => a.status === 'approved').length;
 
   const roleLabel = { command: '指挥中心', inspector: '消防巡查', property: '物业' }[currentUser?.role || 'command'];
 
@@ -75,6 +77,16 @@ export function TopBar() {
           <ShieldAlert className="w-3.5 h-3.5 text-warn-orange" />
           <span className="text-[11px] text-slate-400">工单</span>
           <span className="text-sm font-bold text-warn-orange">{pendingOrders}</span>
+        </div>
+        <div className={`flex items-center gap-2 ${pendingApprovals > 0 ? 'cyber-panel-warn' : 'cyber-panel'} px-3 py-1 rounded-full`}>
+          <FileSignature className={`w-3.5 h-3.5 ${pendingApprovals > 0 ? 'text-warn-orange animate-pulse' : 'text-slate-400'}`} />
+          <span className="text-[11px] text-slate-400">待审批</span>
+          <span className="text-sm font-bold text-warn-orange">{pendingApprovals}</span>
+        </div>
+        <div className="flex items-center gap-2 cyber-panel px-3 py-1 rounded-full">
+          <Activity className="w-3.5 h-3.5 text-life-green" />
+          <span className="text-[11px] text-slate-400">已通过</span>
+          <span className="text-sm font-bold text-life-green">{approvedApprovals}</span>
         </div>
       </div>
 

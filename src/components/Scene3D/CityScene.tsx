@@ -156,9 +156,11 @@ function SceneLoop() {
   const tickRobots = useFireStore(s => s.tickRobots);
   const tickTrucks = useFireStore(s => s.tickTrucks);
   const tickFireSpread = useFireStore(s => s.tickFireSpread);
+  const replayMode = useFireStore(s => s.replayMode);
   const counterRef = useRef(0);
 
   useFrame((_, dt) => {
+    if (replayMode) return;
     counterRef.current += dt;
     tickRobots();
     if (counterRef.current > 0.8) {
@@ -168,9 +170,10 @@ function SceneLoop() {
   });
 
   useEffect(() => {
+    if (replayMode) return;
     const iv = setInterval(() => tickFireSpread(), 4000);
     return () => clearInterval(iv);
-  }, [tickFireSpread]);
+  }, [tickFireSpread, replayMode]);
 
   return null;
 }
