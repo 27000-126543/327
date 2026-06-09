@@ -11,6 +11,8 @@ import {
   mockFireZones
 } from '@/data/mockData';
 
+let _lastTruckSnapshotTs = 0;
+
 const WORKORDERS_LS_KEY = 'fire_platform_workorders_v1';
 
 function loadWorkOrdersFromLS(): WorkOrder[] | null {
@@ -139,10 +141,12 @@ function applyReplaySnapshots<S extends {
   fireStation: FireStation;
   linkedDevices: LinkedDeviceStatus;
   activeTruck: FireTruck | null;
+  buildings: Building[];
 }>(s: S, offsetMs: number): Partial<S> {
   if (!s.replayBackup) return {};
 
-  const events = s.replaySnapshots.filter(e => e.timestamp <= offsetMs);
+  const events = s.replaySnapshots;
+  const passedEvents = events.filter(e => e.timestamp <= offsetMs);
   const backup = s.replayBackup;
 
   const state: SnapshotBuildState = {
@@ -154,7 +158,46 @@ function applyReplaySnapshots<S extends {
     truckPositions: {},
   };
 
-  const dispatchPath = backup.dispatchPath;
+  let dispatchTs = -1;
+  let firstDispatchTruckIds: string[] = [];
+  let baseEtas: Record<string, number> = {};
+
+  passedEvents.forEach(ev => {
+    const snap = ev.snapshot;
+    if (ev.type === 'truck_dispatched' && dispatchTs < 0) {
+      dispatchTs = ev.timestamp;
+      if (snap?.truckStatuses) firstDispatchTruckIds = Object.keys(snap.truckStatuses);
+      if (snap?.truckEtas) baseEtas = { ...snap.truckEtas };
+    }
+    if (!snap) return;
+    if (snap.spreadFloors) state.spreadFloors = snap.spreadFloors;
+    if (snap.linkedDevices) state.linked = { ...state.linked, ...snap.linkedDevices };
+    if (snap.truckStatuses) state.truckStatuses = { ...state.truckStatuses, ...snap.truckStatuses };
+    if (snap.truckEtas) state.truckEtas = { ...state.truckEtas, ...snap.truckEtas };
+    if (snap.truckProgress) state.truckProgress = { ...state.truckProgress, ...snap.truckProgress };
+    if (snap.truckPositions) state.truckPositions = { ...state.truckPositions, ...snap.truckPositions };
+  });
+
+  let effectivePath = backup.dispatchPath;
+  if (!effectivePath) {
+    const alarm = backup.fireAlarms.find(a => a.id === s.replayAlarmId);
+    const building = (s as any).buildings?.find((b: Building) => alarm && b.id === alarm.buildingId);
+    const station = backup.fireStation;
+    if (alarm && building && station) {
+      const [sx, , sz] = station.position;
+      const [ex, , ez] = building.position;
+      const midX = (sx + ex) / 2;
+      effectivePath = [
+        [...station.position] as [number, number, number],
+        [midX, 0, sz + 8],
+        [midX, 0, (sz + ez) / 2],
+        [ex + 8, 0, ez],
+        [...building.position] as [number, number, number],
+      ];
+    }
+  }
+
+  const dispatchPath = effectivePath;
   let totalDist = 0;
   const segLens: number[] = [];
   if (dispatchPath) {
@@ -168,47 +211,50 @@ function applyReplaySnapshots<S extends {
     }
   }
 
-  events.forEach(ev => {
-    const snap = ev.snapshot;
-    if (!snap) return;
-    if (snap.spreadFloors) state.spreadFloors = snap.spreadFloors;
-    if (snap.linkedDevices) state.linked = { ...state.linked, ...snap.linkedDevices };
-    if (snap.truckStatuses) state.truckStatuses = { ...state.truckStatuses, ...snap.truckStatuses };
-    if (snap.truckEtas) state.truckEtas = { ...state.truckEtas, ...snap.truckEtas };
-    if (snap.truckProgress) state.truckProgress = { ...state.truckProgress, ...snap.truckProgress };
-    if (snap.truckPositions) state.truckPositions = { ...state.truckPositions, ...snap.truckPositions };
-  });
+  if (dispatchTs >= 0 && dispatchPath && totalDist > 0) {
+    const baseEta = Math.max(...Object.values(baseEtas), 180);
+    const travelWindow = (baseEta - 0) * 1000;
+    const elapsed = Math.max(0, offsetMs - dispatchTs);
+    const travelProgress = Math.min(1, elapsed / Math.max(1, travelWindow));
 
-  const lastFireEvent = [...events].reverse().find(e => e.type === 'alarm_trigger' || e.type === 'fire_spread');
+    firstDispatchTruckIds.forEach((tid, i) => {
+      if (state.truckStatuses[tid] === 'arrived') return;
+      if (!state.truckStatuses[tid]) state.truckStatuses[tid] = 'dispatched';
+
+      const perTruckOffset = (i * 25 * 1000) / Math.max(1, travelWindow);
+      const truckProgress = Math.max(0, Math.min(1, travelProgress - perTruckOffset));
+      const progressPct = Math.min(100, Math.round(truckProgress * 100));
+      if (!(tid in state.truckProgress)) state.truckProgress[tid] = progressPct;
+      if (!(tid in state.truckEtas)) state.truckEtas[tid] = Math.max(0, Math.round(baseEta - (baseEta * truckProgress)));
+      if (progressPct >= 100) {
+        state.truckStatuses[tid] = 'arrived';
+        state.truckProgress[tid] = 100;
+        state.truckEtas[tid] = 0;
+      }
+    });
+  }
+
   const alarmSourceFloor = (() => {
     const a = backup.fireAlarms.find(x => x.id === s.replayAlarmId);
     return a ? a.sourceFloor : 0;
   })();
-  if (state.spreadFloors.length === 0 && alarmSourceFloor > 0) {
+  if (state.spreadFloors.length === 0 && passedEvents.some(e => e.type === 'alarm_trigger') && alarmSourceFloor > 0) {
     state.spreadFloors = [alarmSourceFloor];
-  }
-  if (!lastFireEvent && state.spreadFloors.length === 0) {
-    state.spreadFloors = [];
   }
 
   const newFireAlarms = backup.fireAlarms.map(a => {
     if (a.id !== s.replayAlarmId) return a;
-    return { ...a, spreadFloors: state.spreadFloors };
+    const isBeforeTrigger = !passedEvents.some(e => e.type === 'alarm_trigger');
+    return { ...a, spreadFloors: isBeforeTrigger ? [] : state.spreadFloors };
   });
 
   let firstActiveIdx = -1;
-  const dispatchedTruckIds = Object.keys(state.truckStatuses).filter(k =>
-    state.truckStatuses[k] === 'dispatched' || state.truckStatuses[k] === 'arrived'
-  );
-  const idleTruckIds = backup.fireStation.trucks
-    .filter(t => dispatchedTruckIds.length === 0 ? true : !dispatchedTruckIds.includes(t.id))
-    .map(t => t.id);
 
   const newTrucks = backup.fireStation.trucks.map((t, i) => {
     const status = state.truckStatuses[t.id];
     if (!status || status === 'idle') {
       const base = s.replayBackup!.fireStation.trucks[i];
-      return { ...base, status: 'idle' as const, eta: undefined, pathSegmentIndex: 0, progressPercent: 0 };
+      return { ...base, status: 'idle' as const, eta: undefined, pathSegmentIndex: 0, progressPercent: 0, targetBuildingId: base.targetBuildingId };
     }
 
     const progress = state.truckProgress[t.id] ?? 0;
@@ -235,10 +281,9 @@ function applyReplaySnapshots<S extends {
         0,
         from[2] + (to[2] - from[2]) * segT,
       ];
-      if ((status === 'dispatched' && Object.keys(state.truckStatuses).length > 0) || status === 'arrived') {
-        if (firstActiveIdx < 0) firstActiveIdx = i;
-      }
     }
+
+    if (firstActiveIdx < 0 && (status === 'dispatched' || status === 'arrived')) firstActiveIdx = i;
 
     return {
       ...t,
@@ -246,7 +291,8 @@ function applyReplaySnapshots<S extends {
       eta,
       currentPosition: pos,
       progressPercent: status === 'arrived' ? 100 : progress,
-      pathSegmentIndex: status === 'arrived' ? (dispatchPath ? dispatchPath.length - 1 : 0) : undefined,
+      pathSegmentIndex: status === 'arrived' && dispatchPath ? dispatchPath.length - 1 : 0,
+      targetBuildingId: t.targetBuildingId,
     };
   });
 
@@ -263,7 +309,7 @@ function applyReplaySnapshots<S extends {
     fireStation: { ...backup.fireStation, trucks: newTrucks } as any,
     linkedDevices: state.linked as any,
     activeTruck: firstActiveIdx >= 0 ? newTrucks[firstActiveIdx] as any : null,
-    dispatchPath: backup.dispatchPath as any,
+    dispatchPath: dispatchPath as any,
     replayAlarmId: s.replayAlarmId as any,
   };
   return result;
@@ -357,18 +403,53 @@ export const useFireStore = create<FireState>((set, get) => {
   fireAlarms: [initialAlarm],
   timelineEvents: [
     { id: 'tl1', alarmId: 'fa1', type: 'alarm_trigger', timestamp: initialTriggerTs,
-      title: '火警触发', description: '24层烟感探测器触发信号',
-      snapshot: { spreadFloors: [24] } },
+      title: '火警触发', description: '天际中心大厦24层烟感探测器触发信号',
+      snapshot: { spreadFloors: [24], linkedDevices: { fireShutter: false, smokeExtractor: false, broadcast: false, sprinkler: false, elevatorDrop: false } } },
     { id: 'tl2', alarmId: 'fa1', type: 'linkage_start', timestamp: initialTriggerTs + 3000,
       title: '联动启动', description: '启动应急联动预案' },
     { id: 'tl3', alarmId: 'fa1', type: 'linkage_shutter', timestamp: initialTriggerTs + 5000,
-      title: '防火卷帘关闭', description: '防火分区卷帘下降完成' },
-    { id: 'tl4', alarmId: 'fa1', type: 'truck_dispatched', timestamp: initialTriggerTs + 10000,
-      title: '消防车出动', description: '调度3辆消防车出警',
-      snapshot: { truckStatuses: { ft1: 'dispatched', ft2: 'dispatched', ft3: 'dispatched' } } },
+      title: '防火卷帘关闭', description: '防火分区卷帘下降完成',
+      snapshot: { linkedDevices: { fireShutter: true } } },
+    { id: 'tl3b', alarmId: 'fa1', type: 'linkage_exhaust', timestamp: initialTriggerTs + 7000,
+      title: '排烟风机启动', description: '疏散通道正压送风启动',
+      snapshot: { linkedDevices: { smokeExtractor: true } } },
+    { id: 'tl3c', alarmId: 'fa1', type: 'linkage_broadcast', timestamp: initialTriggerTs + 9000,
+      title: '消防广播开启', description: '全楼播放疏散引导语音',
+      snapshot: { linkedDevices: { broadcast: true } } },
+    { id: 'tl3d', alarmId: 'fa1', type: 'linkage_sprinkler', timestamp: initialTriggerTs + 10500,
+      title: '喷淋系统启动', description: '火源层喷淋管网加压',
+      snapshot: { linkedDevices: { sprinkler: true } } },
+    { id: 'tl4', alarmId: 'fa1', type: 'truck_dispatched', timestamp: initialTriggerTs + 11500,
+      title: '消防车出动', description: '调度3辆消防车：消-01指挥车/消-02水罐车/消-03云梯车',
+      snapshot: {
+        truckStatuses: { ft1: 'dispatched', ft2: 'dispatched', ft3: 'dispatched' },
+        truckProgress: { ft1: 0, ft2: 0, ft3: 0 },
+        truckEtas: { ft1: 180, ft2: 205, ft3: 230 },
+      } },
+    { id: 'tl4b', alarmId: 'fa1', type: 'truck_travel', timestamp: initialTriggerTs + 25000,
+      title: '车辆行驶中', description: '平均进度 30% · 车队通过中心大道北段',
+      snapshot: {
+        truckStatuses: { ft1: 'dispatched', ft2: 'dispatched', ft3: 'dispatched' },
+        truckProgress: { ft1: 33, ft2: 28, ft3: 22 },
+        truckEtas: { ft1: 120, ft2: 145, ft3: 175 },
+      } },
+    { id: 'tl4c', alarmId: 'fa1', type: 'truck_travel', timestamp: initialTriggerTs + 40000,
+      title: '车辆行驶中', description: '平均进度 65% · 前方右转进入火场周边道路',
+      snapshot: {
+        truckStatuses: { ft1: 'dispatched', ft2: 'dispatched', ft3: 'dispatched' },
+        truckProgress: { ft1: 70, ft2: 63, ft3: 55 },
+        truckEtas: { ft1: 55, ft2: 78, ft3: 105 },
+      } },
     { id: 'tl5', alarmId: 'fa1', type: 'fire_spread', timestamp: initialTriggerTs + 40000,
-      title: '火势蔓延', description: '蔓延至23、25层',
+      title: '火势蔓延', description: '蔓延至23、25层，共3层受影响',
       snapshot: { spreadFloors: [23, 24, 25] } },
+    { id: 'tl4d', alarmId: 'fa1', type: 'truck_arrived', timestamp: initialTriggerTs + 58000,
+      title: '消-01指挥车到达现场', description: '前沿指挥部搭建完成，指战员下车侦查火情',
+      snapshot: {
+        truckStatuses: { ft1: 'arrived', ft2: 'dispatched', ft3: 'dispatched' },
+        truckProgress: { ft1: 100, ft2: 92, ft3: 85 },
+        truckEtas: { ft1: 0, ft2: 15, ft3: 35 },
+      } },
   ],
   workOrders: mergeAndDedupWorkOrders(mockWorkOrders, mockBuildings),
   fireStation: mockFireStation,
@@ -440,12 +521,7 @@ export const useFireStore = create<FireState>((set, get) => {
       setTimeout(() => get().addTimelineEvent({ alarmId: alarm.id, type: 'linkage_sprinkler',
         title: '喷淋系统启动', snapshot: { linkedDevices: { sprinkler: true } } }), 2800);
     }, 500);
-    setTimeout(() => {
-      get().dispatchTrucks(buildingId, level);
-      get().addTimelineEvent({ alarmId: alarm.id, type: 'truck_dispatched',
-        title: '消防车出动', description: `调度${level === 1 ? 2 : level === 2 ? 3 : 5}辆消防车`,
-        timestamp: Date.now() });
-    }, 1500);
+    setTimeout(() => get().dispatchTrucks(buildingId, level), 1500);
   },
 
   updateFireSpread: (alarmId, floors) => {
@@ -505,11 +581,34 @@ export const useFireStore = create<FireState>((set, get) => {
       return t;
     });
 
+    const statuses: Record<string, FireTruck['status']> = {};
+    const progresses: Record<string, number> = {};
+    const etas: Record<string, number> = {};
+    const positions: Record<string, [number, number, number]> = {};
+    newTrucks.forEach(t => {
+      if (t.status === 'dispatched' || t.status === 'arrived') {
+        statuses[t.id] = t.status;
+        progresses[t.id] = t.progressPercent || 0;
+        etas[t.id] = t.eta || 0;
+        positions[t.id] = t.currentPosition;
+      }
+    });
+
     set({
       fireStation: { ...station, trucks: newTrucks },
       activeTruck: newTrucks.find(t => t.id === idleTrucks[0].id) || null,
       dispatchPath: path,
     });
+
+    const activeAlarm = get().fireAlarms.find(a => a.buildingId === buildingId && a.status === 'active');
+    if (activeAlarm) {
+      get().addTimelineEvent({
+        alarmId: activeAlarm.id, type: 'truck_dispatched',
+        title: '消防车出动',
+        description: `调度${idleTrucks.length}辆消防车 (${idleTrucks.map(t => t.name).join('、')})`,
+        snapshot: { truckStatuses: statuses, truckProgress: progresses, truckEtas: etas, truckPositions: positions },
+      });
+    }
   },
 
   updateTruckPosition: (truckId, pos, eta) => set((s) => ({
@@ -694,17 +793,70 @@ export const useFireStore = create<FireState>((set, get) => {
       };
     });
 
+    const now = Date.now();
+    const snapshotInterval = 1000;
+    const hasTraveling = newTrucks.some(t => t.status === 'dispatched');
+    const hasArrived = arrivedIds.length > 0;
+
     setTimeout(() => {
-      arrivedIds.forEach(tid => {
-        const truck = get().fireStation.trucks.find(x => x.id === tid);
-        const alarm = get().fireAlarms.find(a => a.status !== 'resolved'
-          && (a.buildingId === truck?.targetBuildingId));
-        if (truck && alarm) {
-          get().addTimelineEvent({ alarmId: alarm.id, type: 'truck_arrived',
-            title: `${truck.name}到达现场`, description: '消防指战员已就位开始处置',
-            snapshot: { truckStatuses: { [tid]: 'arrived' }, truckProgress: { [tid]: 100 } } });
-        }
-      });
+      const state = get();
+      const allActive = state.fireStation.trucks.filter(t =>
+        t.status === 'dispatched' || t.status === 'arrived'
+      );
+      const activeBuildingId = allActive[0]?.targetBuildingId;
+      const alarm = activeBuildingId
+        ? state.fireAlarms.find(a => a.buildingId === activeBuildingId)
+        : null;
+
+      if (!alarm) return;
+
+      if (hasArrived) {
+        const statuses: Record<string, FireTruck['status']> = {};
+        const progresses: Record<string, number> = {};
+        const etas: Record<string, number> = {};
+        const positions: Record<string, [number, number, number]> = {};
+        state.fireStation.trucks.forEach(t => {
+          if (t.status === 'dispatched' || t.status === 'arrived') {
+            statuses[t.id] = t.status;
+            progresses[t.id] = t.progressPercent || 0;
+            etas[t.id] = t.eta || 0;
+            positions[t.id] = t.currentPosition;
+          }
+        });
+        arrivedIds.forEach(tid => {
+          const truck = state.fireStation.trucks.find(x => x.id === tid);
+          if (truck) {
+            state.addTimelineEvent({
+              alarmId: alarm.id, type: 'truck_arrived',
+              title: `${truck.name}到达现场`, description: '消防指战员已就位开始处置',
+              snapshot: { truckStatuses: statuses, truckProgress: progresses, truckEtas: etas, truckPositions: positions },
+            });
+          }
+        });
+        _lastTruckSnapshotTs = now;
+      }
+
+      if (hasTraveling && !hasArrived && (now - _lastTruckSnapshotTs >= snapshotInterval)) {
+        const statuses: Record<string, FireTruck['status']> = {};
+        const progresses: Record<string, number> = {};
+        const etas: Record<string, number> = {};
+        const positions: Record<string, [number, number, number]> = {};
+        state.fireStation.trucks.forEach(t => {
+          if (t.status === 'dispatched' || t.status === 'arrived') {
+            statuses[t.id] = t.status;
+            progresses[t.id] = t.progressPercent || 0;
+            etas[t.id] = t.eta || 0;
+            positions[t.id] = t.currentPosition;
+          }
+        });
+        state.addTimelineEvent({
+          alarmId: alarm.id, type: 'truck_travel',
+          title: '车辆行驶中',
+          description: `平均进度 ${Math.round(Object.values(progresses).reduce((a, b) => a + b, 0) / Math.max(1, Object.values(progresses).length))}%`,
+          snapshot: { truckStatuses: statuses, truckProgress: progresses, truckEtas: etas, truckPositions: positions },
+        });
+        _lastTruckSnapshotTs = now;
+      }
     }, 30);
 
     const firstDispatched = newTrucks.findIndex(t => t.status === 'dispatched' || t.status === 'arrived');
@@ -789,15 +941,17 @@ export const useFireStore = create<FireState>((set, get) => {
       dispatchPath: s.dispatchPath ? JSON.parse(JSON.stringify(s.dispatchPath)) : null,
     };
 
-    return {
+    const partialState: Partial<FireState> = {
       replayMode: true,
       replayAlarmId: alarmId,
       replayCurrentTime: 0,
       replayPlaying: false,
       replaySnapshots: normalizedEvents,
       replayBackup: backup,
-      linkedDevices: { fireShutter: false, smokeExtractor: false, broadcast: false, sprinkler: false, elevatorDrop: false },
     };
+    const intermediate: FireState = { ...s, ...partialState } as FireState;
+    const snapshotApplied = applyReplaySnapshots<FireState>(intermediate, 0);
+    return { ...partialState, ...snapshotApplied };
   }),
   stopReplay: () => set((s) => {
     if (!s.replayBackup) return { replayMode: false, replayAlarmId: null, replayCurrentTime: 0, replayPlaying: false, replaySnapshots: [], replayBackup: null };

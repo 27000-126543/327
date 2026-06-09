@@ -53,6 +53,7 @@ export type TimelineEventType =
   | 'linkage_broadcast'
   | 'linkage_sprinkler'
   | 'truck_dispatched'
+  | 'truck_travel'
   | 'truck_arrived'
   | 'fire_spread'
   | 'fire_contained'

@@ -10,6 +10,7 @@ const typeStyleMap: Record<string, { bg: string; icon: any; label: string }> = {
   linkage_broadcast: { bg: 'bg-power-yellow/20 border-power-yellow/40 text-power-yellow', icon: Radio, label: '广播' },
   linkage_sprinkler: { bg: 'bg-life-green/20 border-life-green/40 text-life-green', icon: AlertTriangle, label: '喷淋' },
   truck_dispatched: { bg: 'bg-cyber-blue/20 border-cyber-blue/50 text-cyber-blue', icon: Truck, label: '出警' },
+  truck_travel: { bg: 'bg-cyber-blue/15 border-cyber-blue/40 text-cyber-blue', icon: Truck, label: '行驶' },
   truck_arrived: { bg: 'bg-life-green/20 border-life-green/50 text-life-green', icon: Truck, label: '到达' },
   fire_spread: { bg: 'bg-fire-red/30 border-fire-red/60 text-fire-red', icon: Flame, label: '蔓延' },
   fire_contained: { bg: 'bg-warn-orange/25 border-warn-orange/60 text-warn-orange', icon: AlertTriangle, label: '控制' },
