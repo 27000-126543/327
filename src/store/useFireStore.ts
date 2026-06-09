@@ -114,6 +114,7 @@ interface FireState {
   loginRecords: LoginRecord[];
   buildings: Building[];
   fireAlarms: FireAlarm[];
+  timelineEvents: FireTimelineEvent[];
   workOrders: WorkOrder[];
   fireStation: FireStation;
   activeTruck: FireTruck | null;
@@ -128,6 +129,12 @@ interface FireState {
   linkedDevices: LinkedDeviceStatus;
   selectedBuildingId: string | null;
   activeTab: 'dashboard' | 'approval' | 'reports';
+
+  replayMode: boolean;
+  replayAlarmId: string | null;
+  replayCurrentTime: number;
+  replayPlaying: boolean;
+  replaySnapshots: FireTimelineEvent[];
 
   login: (role: UserRole) => void;
   logout: () => void;
@@ -145,6 +152,7 @@ interface FireState {
   addWorkOrder: (order: Omit<WorkOrder, 'id' | 'createdAt'>) => void;
   updateWorkOrderStatus: (id: string, status: WorkOrder['status']) => void;
 
+  submitApproval: (data: { title: string; description: string; buildingId: string }) => void;
   advanceApproval: (approvalId: string, role: UserRole, comment?: string) => void;
 
   updateHydrantPressure: (id: string, pressure: number) => void;
@@ -157,6 +165,13 @@ interface FireState {
   tickRobots: () => void;
   tickTrucks: () => void;
   tickFireSpread: () => void;
+
+  addTimelineEvent: (e: Omit<FireTimelineEvent, 'id' | 'timestamp'> & { timestamp?: number }) => void;
+  startReplay: (alarmId: string) => void;
+  stopReplay: () => void;
+  toggleReplayPlaying: () => void;
+  seekReplay: (offsetMs: number) => void;
+  tickReplay: (deltaMs: number) => void;
 }
 
 export const useFireStore = create<FireState>((set, get) => ({

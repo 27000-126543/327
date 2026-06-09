@@ -45,6 +45,36 @@ export interface Building {
   fireZones: number[];
 }
 
+export type TimelineEventType =
+  | 'alarm_trigger'
+  | 'linkage_start'
+  | 'linkage_shutter'
+  | 'linkage_exhaust'
+  | 'linkage_broadcast'
+  | 'linkage_sprinkler'
+  | 'truck_dispatched'
+  | 'truck_arrived'
+  | 'fire_spread'
+  | 'fire_contained'
+  | 'fire_resolved';
+
+export interface FireTimelineEvent {
+  id: string;
+  alarmId: string;
+  type: TimelineEventType;
+  timestamp: number;
+  title: string;
+  description?: string;
+  snapshot?: {
+    truckPositions?: Record<string, [number, number, number]>;
+    truckEtas?: Record<string, number>;
+    truckStatuses?: Record<string, FireTruck['status']>;
+    truckProgress?: Record<string, number>;
+    spreadFloors?: number[];
+    linkedDevices?: Partial<LinkedDeviceStatus>;
+  };
+}
+
 export interface FireAlarm {
   id: string;
   buildingId: string;
@@ -52,8 +82,11 @@ export interface FireAlarm {
   sourceFloor: number;
   level: 1 | 2 | 3;
   triggerTime: string;
+  triggerTimestamp: number;
   status: 'active' | 'contained' | 'resolved';
   spreadFloors: number[];
+  containedAt?: number;
+  resolvedAt?: number;
 }
 
 export type WorkOrderType = 'facility_repair' | 'pressure_boost' | 'tow_vehicle' | 'evacuation_clear';
